@@ -421,8 +421,14 @@ def classify_medical_image(
         )
 
         qualifier = "inconclusive" if top_prob < 0.5 else "predicted"
+        if scan_type in {"brain", "bone"}:
+            route_label = "auto-routed"
+        elif scan_type is None:
+            route_label = "manual"
+        else:
+            route_label = "fallback"
         summaries.append(
-            f"{spec.name} ({'auto-routed' if scan_type else 'manual'}) analysis for {file_name}: {qualifier} "
+            f"{spec.name} ({route_label}) analysis for {file_name}: {qualifier} "
             f"{top_label} with {top_prob:.1%} confidence. Top probabilities: {top_items}."
         )
 
@@ -462,9 +468,9 @@ def build_knowledge_base_from_files(
                         elif scan_type == "brain":
                             routing_badge = "Brain scan detected by Groq triage."
                         else:
-                            routing_badge = "Scan type not confidently identified; model inference skipped."
+                            routing_badge = "Groq triage unsure; running full classifier suite."
                     else:
-                        routing_badge = "Groq triage disabled; ran full classifier suite."
+                        routing_badge = "Groq triage disabled; running full classifier suite."
 
                     if routing_badge:
                         kb.classification_notes.append(f"{name}: {routing_badge}")
@@ -476,7 +482,7 @@ def build_knowledge_base_from_files(
                         pil_image,
                         device,
                         scan_type=scan_type,
-                        fallback_to_all=not triage_enabled,
+                        fallback_to_all=(not triage_enabled) or (scan_type not in {"brain", "bone"}),
                     )
                     for summary in summaries:
                         kb.classification_notes.append(summary)
@@ -870,21 +876,29 @@ def main() -> None:
                 triage_enabled = bool(os.getenv("GROQ_API_KEY"))
                 if triage_enabled:
                     scan_type = identify_scan_type(pil_image)
-                    pill_text = f"Scan triage: {scan_type.upper()}"
-                    pill_class = scan_type
+                    pill_class = scan_type if scan_type in {"brain", "bone"} else "other"
+                    if scan_type in {"brain", "bone"}:
+                        pill_text = f"Scan triage: {scan_type.upper()}"
+                    else:
+                        pill_text = "Scan triage unsure – running all models"
                 else:
                     scan_type = None
-                    pill_text = "Scan triage disabled (set GROQ_API_KEY)"
                     pill_class = "other"
+                    pill_text = "Scan triage disabled (set GROQ_API_KEY)"
 
                 st.markdown(
                     f"<div class='scan-pill {pill_class}'>{pill_text}</div>",
                     unsafe_allow_html=True,
                 )
 
-                specs_to_run = get_specs_for_scan_type(scan_type, fallback_to_all=not triage_enabled)
-                if triage_enabled and not specs_to_run:
-                    st.warning("Groq triage could not determine the modality; skipping model inference.")
+                fallback_to_all = (not triage_enabled) or (scan_type not in {"brain", "bone"})
+                specs_to_run = get_specs_for_scan_type(scan_type, fallback_to_all=fallback_to_all)
+
+                if triage_enabled and scan_type not in {"brain", "bone"}:
+                    st.warning("Groq triage was unsure about the modality; running all available classifiers as a fallback.")
+
+                if not specs_to_run:
+                    st.warning("No classifier matched the requested modality. Please verify your model configuration.")
                 else:
                     for spec in specs_to_run:
                         try:
